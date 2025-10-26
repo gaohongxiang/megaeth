@@ -20,6 +20,21 @@ const GAS_STRATEGY = {
     slow: { multiplier: 0.8, ratio: 0.2 }      // 20%慢速交易
 }
 
+// 差异化策略配置 - 扩展到8种策略
+const STRATEGIES = {
+    // 基础三种策略
+    aggressive: { cancel: 0.50, call: 0.30, batch: 0.20, modify: 0.25 },
+    balanced: { cancel: 0.35, call: 0.50, batch: 0.15, modify: 0.20 },
+    conservative: { cancel: 0.20, call: 0.60, batch: 0.10, modify: 0.15 },
+
+    // 扩展策略
+    scalper: { cancel: 0.70, call: 0.10, batch: 0.05, modify: 0.40 },      // 超短线：高撤单高修改
+    arbitrage: { cancel: 0.30, call: 0.40, batch: 0.25, modify: 0.10 },    // 套利：高批量低修改
+    momentum: { cancel: 0.25, call: 0.45, batch: 0.30, modify: 0.15 },     // 趋势：高批量中等调用
+    contrarian: { cancel: 0.40, call: 0.35, batch: 0.10, modify: 0.30 },   // 逆向：高撤单高修改
+    passive: { cancel: 0.15, call: 0.70, batch: 0.08, modify: 0.12 }       // 被动：超高调用超低撤单
+}
+
 // Enhanced ABI for Pinger contract
 const POKE_ABI = [
     { "inputs": [], "name": "poke", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
@@ -219,20 +234,27 @@ function createProxyAgent(proxyUrl) {
 function parseWalletConfig() {
     const wallets = []
     let walletIndex = 1
+    const strategyNames = Object.keys(STRATEGIES)
 
     // 扫描环境变量，查找 WALLET{N}_PRIVATE_KEY 格式
     while (true) {
         const privateKeyVar = `WALLET${walletIndex}_PRIVATE_KEY`
         const proxyVar = `WALLET${walletIndex}_PROXY`
+        const strategyVar = `WALLET${walletIndex}_STRATEGY`
 
         const privateKey = process.env[privateKeyVar]
         if (!privateKey) break // 没有更多钱包配置
 
         const proxyUrl = process.env[proxyVar] || null
+        // 随机选择策略，如果手动指定了就用指定的
+        const strategyName = process.env[strategyVar] || strategyNames[Math.floor(Math.random() * strategyNames.length)]
+        const strategy = STRATEGIES[strategyName] || STRATEGIES.balanced
 
         wallets.push({
             privateKey: privateKey.trim(),
             proxyUrl: proxyUrl ? proxyUrl.trim() : null,
+            strategy: strategy,
+            strategyName: strategyName,
             id: walletIndex - 1,
             name: `W${walletIndex}`
         })
@@ -245,6 +267,8 @@ function parseWalletConfig() {
         wallets.push({
             privateKey: process.env.PRIVATE_KEY.trim(),
             proxyUrl: process.env.PROXY_URL || null,
+            strategy: STRATEGIES.balanced,
+            strategyName: 'balanced',
             id: 0,
             name: 'W1'
         })
@@ -280,7 +304,18 @@ async function main() {
     console.log(`🤖 Advanced Market Making Bot Started`)
     console.log(`👥 Wallets: ${walletConfigs.length}`)
     console.log(`🌐 Proxies: ${walletConfigs.filter(c => c.proxyUrl).length}`)
-    console.log(`📊 Strategy: Cancel=${CANCEL_RATIO * 100}% Call=${CALL_RATIO * 100}% Batch=${BATCH_RATIO * 100}%`)
+
+    // 显示策略分布
+    const strategyCount = {}
+    walletConfigs.forEach(config => {
+        strategyCount[config.strategyName] = (strategyCount[config.strategyName] || 0) + 1
+    })
+    const strategyInfo = Object.entries(strategyCount).map(([name, count]) => `${name}:${count}`).join(' ')
+    console.log(`📊 Strategies: ${strategyInfo}`)
+
+    // 显示第一个钱包的策略详情作为示例
+    const firstStrategy = walletConfigs[0].strategy
+    console.log(`📈 Sample Strategy: Cancel=${Math.round(firstStrategy.cancel * 100)}% Call=${Math.round(firstStrategy.call * 100)}% Batch=${Math.round(firstStrategy.batch * 100)}% Modify=${Math.round(firstStrategy.modify * 100)}%`)
 
     // 为每个钱包创建实例
     const walletInstances = await Promise.all(walletConfigs.map(createWalletInstance))
@@ -288,7 +323,8 @@ async function main() {
     // 显示钱包信息
     walletInstances.forEach((instance, i) => {
         const proxyInfo = instance.config.proxyUrl ? `via ${instance.config.proxyUrl.split('@')[1] || instance.config.proxyUrl}` : 'direct'
-        console.log(`💼 Wallet[${i}]: ${instance.wallet.address.slice(0, 8)}... ${proxyInfo}`)
+        const strategyInfo = `📊 ${instance.config.strategyName}`
+        console.log(`💼 Wallet[${i}]: ${instance.wallet.address.slice(0, 8)}... ${proxyInfo} ${strategyInfo}`)
     })
 
     const iface = new ethers.Interface(POKE_ABI)
@@ -303,11 +339,12 @@ async function main() {
             try {
                 const r = Math.random()
 
-                // 高级策略判断
-                const doBatch = r < BATCH_RATIO
-                const doModify = r >= BATCH_RATIO && r < BATCH_RATIO + MODIFY_RATIO
-                const doCancel = r >= BATCH_RATIO + MODIFY_RATIO && r < BATCH_RATIO + MODIFY_RATIO + CANCEL_RATIO
-                const doCall = CONTRACT_ADDRESS && r >= BATCH_RATIO + MODIFY_RATIO + CANCEL_RATIO && r < BATCH_RATIO + MODIFY_RATIO + CANCEL_RATIO + CALL_RATIO
+                // 使用钱包独立的策略决策
+                const strategy = instance.config.strategy
+                const doBatch = r < strategy.batch
+                const doModify = r >= strategy.batch && r < strategy.batch + strategy.modify
+                const doCancel = r >= strategy.batch + strategy.modify && r < strategy.batch + strategy.modify + strategy.cancel
+                const doCall = CONTRACT_ADDRESS && r >= strategy.batch + strategy.modify + strategy.cancel && r < strategy.batch + strategy.modify + strategy.cancel + strategy.call
 
                 const fee = await instance.provider.getFeeData()
 
