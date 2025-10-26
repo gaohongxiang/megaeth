@@ -13,6 +13,7 @@
   "dependencies": {
     "dotenv": "^17.2.3",
     "ethers": "^6.15.0",
+    "socks-proxy-agent": "^8.0.5",
     "ws": "^8.18.3"
   },
   "devDependencies": {
