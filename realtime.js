@@ -2,6 +2,7 @@ import 'dotenv/config'
 import { WebSocket } from 'ws'
 import { ethers } from 'ethers'
 import { SocksProxyAgent } from 'socks-proxy-agent'
+import { deCryptText } from './crypt/crypt.js'
 
 const { HTTP_URL, WS_URL, CHAIN_ID, CONTRACT_ADDRESS } = process.env
 
@@ -231,10 +232,13 @@ function createProxyAgent(proxyUrl) {
 // makeWs()
 
 // 解析分组钱包配置
-function parseWalletConfig() {
+async function parseWalletConfig() {
     const wallets = []
     let walletIndex = 1
     const strategyNames = Object.keys(STRATEGIES)
+    const useEncryption = process.env.USE_ENCRYPTION === 'true'
+
+    console.log(`🔐 加密模式: ${useEncryption ? '启用' : '禁用'}`)
 
     // 扫描环境变量，查找 WALLET{N}_PRIVATE_KEY 格式
     while (true) {
@@ -242,8 +246,26 @@ function parseWalletConfig() {
         const proxyVar = `WALLET${walletIndex}_PROXY`
         const strategyVar = `WALLET${walletIndex}_STRATEGY`
 
-        const privateKey = process.env[privateKeyVar]
+        let privateKey = process.env[privateKeyVar]
         if (!privateKey) break // 没有更多钱包配置
+
+        // 如果启用加密，尝试解密私钥
+        if (useEncryption) {
+            try {
+                console.log(`🔓 解密钱包${walletIndex}私钥...`)
+                privateKey = await deCryptText(privateKey.trim())
+                if (!privateKey) {
+                    console.error(`❌ 钱包${walletIndex}私钥解密失败，跳过`)
+                    walletIndex++
+                    continue
+                }
+                console.log(`✅ 钱包${walletIndex}私钥解密成功`)
+            } catch (error) {
+                console.error(`❌ 钱包${walletIndex}私钥解密失败:`, error.message)
+                walletIndex++
+                continue
+            }
+        }
 
         const proxyUrl = process.env[proxyVar] || null
         // 随机选择策略，如果手动指定了就用指定的
@@ -264,8 +286,25 @@ function parseWalletConfig() {
 
     // 如果没有找到分组配置，尝试兼容旧格式
     if (wallets.length === 0 && process.env.PRIVATE_KEY) {
+        let privateKey = process.env.PRIVATE_KEY.trim()
+        
+        // 如果启用加密，尝试解密私钥
+        if (useEncryption) {
+            try {
+                console.log(`🔓 解密主钱包私钥...`)
+                privateKey = await deCryptText(privateKey)
+                if (!privateKey) {
+                    throw new Error('解密失败')
+                }
+                console.log(`✅ 主钱包私钥解密成功`)
+            } catch (error) {
+                console.error(`❌ 主钱包私钥解密失败:`, error.message)
+                return []
+            }
+        }
+
         wallets.push({
-            privateKey: process.env.PRIVATE_KEY.trim(),
+            privateKey: privateKey,
             proxyUrl: process.env.PROXY_URL || null,
             strategy: STRATEGIES.balanced,
             strategyName: 'balanced',
@@ -300,7 +339,7 @@ async function createWalletInstance(config) {
 }
 
 async function main() {
-    const walletConfigs = parseWalletConfig()
+    const walletConfigs = await parseWalletConfig()
     console.log(`🤖 Advanced Market Making Bot Started`)
     console.log(`👥 Wallets: ${walletConfigs.length}`)
     console.log(`🌐 Proxies: ${walletConfigs.filter(c => c.proxyUrl).length}`)

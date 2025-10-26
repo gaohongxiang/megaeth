@@ -11,6 +11,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "csv-parse": "^6.1.0",
+    "csv-stringify": "^6.6.0",
     "dotenv": "^17.2.3",
     "ethers": "^6.15.0",
     "socks-proxy-agent": "^8.0.5",
