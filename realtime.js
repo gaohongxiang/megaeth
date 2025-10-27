@@ -7,7 +7,7 @@ import { deCryptText } from './crypt/crypt.js'
 const { HTTP_URL, WS_URL, CHAIN_ID, CONTRACT_ADDRESS } = process.env
 
 // 做市节奏参数（可调）
-const TICK_MS = 420      // 更高频
+const TICK_MS = 800      // 降低频率避免流量限制
 const CANCEL_RATIO = 0.35 // 撤单概率（模拟撤单/改单）
 const CALL_RATIO = 0.5    // 合约调用比例（有合约时）
 
@@ -179,7 +179,7 @@ function showStats(stats) {
 // 全局代理配置（已废弃，现在每个钱包独立配置代理）
 // const proxyAgent = PROXY_URL ? createProxyAgent(PROXY_URL) : null
 
-async function rpc(method, params = [], proxyAgent = null) {
+async function rpc(method, params = [], proxyAgent = null, retries = 3) {
     const fetchOptions = {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -191,10 +191,30 @@ async function rpc(method, params = [], proxyAgent = null) {
         fetchOptions.agent = proxyAgent
     }
 
-    const res = await fetch(HTTP_URL, fetchOptions)
-    const data = await res.json()
-    if (data.error) throw new Error(`${method} RPC error: ${JSON.stringify(data.error)}`)
-    return data.result
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+            const res = await fetch(HTTP_URL, fetchOptions)
+            const data = await res.json()
+            
+            // 检查是否是流量限制错误
+            if (data.error && data.error.code === -32021) {
+                const retryDelay = Math.max(1000, (attempt + 1) * 500) // 递增延迟
+                console.log(`⚠️ 流量限制，${retryDelay}ms后重试 (${attempt + 1}/${retries + 1})`)
+                if (attempt < retries) {
+                    await new Promise(r => setTimeout(r, retryDelay))
+                    continue
+                }
+            }
+            
+            if (data.error) throw new Error(`${method} RPC error: ${JSON.stringify(data.error)}`)
+            return data.result
+        } catch (error) {
+            if (attempt === retries) throw error
+            const retryDelay = (attempt + 1) * 1000
+            console.log(`⚠️ RPC错误，${retryDelay}ms后重试: ${error.message}`)
+            await new Promise(r => setTimeout(r, retryDelay))
+        }
+    }
 }
 
 // 创建SOCKS代理
@@ -240,36 +260,36 @@ async function parseWalletConfig() {
 
     console.log(`🔐 加密模式: ${useEncryption ? '启用' : '禁用'}`)
 
-    // 扫描环境变量，查找 WALLET{N}_PRIVATE_KEY 格式
-    while (true) {
-        const privateKeyVar = `WALLET${walletIndex}_PRIVATE_KEY`
-        const proxyVar = `WALLET${walletIndex}_PROXY`
-        const strategyVar = `WALLET${walletIndex}_STRATEGY`
+    // 扫描环境变量，查找所有 WALLET{N}_PRIVATE_KEY 格式
+    const walletKeys = Object.keys(process.env).filter(key => key.match(/^WALLET\d+_PRIVATE_KEY$/))
+    const walletNumbers = walletKeys.map(key => parseInt(key.match(/\d+/)[0])).sort((a, b) => a - b)
+
+    for (const walletNum of walletNumbers) {
+        const privateKeyVar = `WALLET${walletNum}_PRIVATE_KEY`
+        const proxyVar = `WALLET${walletNum}_PROXY`
+        const strategyVar = `WALLET${walletNum}_STRATEGY`
 
         let privateKey = process.env[privateKeyVar]
-        if (!privateKey) break // 没有更多钱包配置
 
         // 如果启用加密，尝试解密私钥
         if (useEncryption) {
             try {
-                console.log(`🔓 解密钱包${walletIndex}私钥...`)
+                console.log(`🔓 解密钱包${walletNum}私钥...`)
                 privateKey = await deCryptText(privateKey.trim())
                 if (!privateKey) {
-                    console.error(`❌ 钱包${walletIndex}私钥解密失败，跳过`)
-                    walletIndex++
+                    console.error(`❌ 钱包${walletNum}私钥解密失败，跳过`)
                     continue
                 }
-                console.log(`✅ 钱包${walletIndex}私钥解密成功`)
+                console.log(`✅ 钱包${walletNum}私钥解密成功`)
             } catch (error) {
-                console.error(`❌ 钱包${walletIndex}私钥解密失败:`, error.message)
-                walletIndex++
+                console.error(`❌ 钱包${walletNum}私钥解密失败:`, error.message)
                 continue
             }
         }
 
         const proxyUrl = process.env[proxyVar] || null
-        // 随机选择策略，如果手动指定了就用指定的
-        const strategyName = process.env[strategyVar] || strategyNames[Math.floor(Math.random() * strategyNames.length)]
+        // 按顺序循环分配策略，如果手动指定了就用指定的
+        const strategyName = process.env[strategyVar] || strategyNames[wallets.length % strategyNames.length]
         const strategy = STRATEGIES[strategyName] || STRATEGIES.balanced
 
         wallets.push({
@@ -277,17 +297,15 @@ async function parseWalletConfig() {
             proxyUrl: proxyUrl ? proxyUrl.trim() : null,
             strategy: strategy,
             strategyName: strategyName,
-            id: walletIndex - 1,
-            name: `W${walletIndex}`
+            id: wallets.length, // 使用数组长度作为ID
+            name: `W${walletNum}`
         })
-
-        walletIndex++
     }
 
     // 如果没有找到分组配置，尝试兼容旧格式
     if (wallets.length === 0 && process.env.PRIVATE_KEY) {
         let privateKey = process.env.PRIVATE_KEY.trim()
-        
+
         // 如果启用加密，尝试解密私钥
         if (useEncryption) {
             try {
