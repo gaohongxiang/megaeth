@@ -7,7 +7,7 @@ import { deCryptText } from './crypt/crypt.js'
 const { HTTP_URL, WS_URL, CHAIN_ID, CONTRACT_ADDRESS } = process.env
 
 // 做市节奏参数（可调）
-const TICK_MS = 800      // 降低频率避免流量限制
+const TICK_MS = 420      // 更高频
 const CANCEL_RATIO = 0.35 // 撤单概率（模拟撤单/改单）
 const CALL_RATIO = 0.5    // 合约调用比例（有合约时）
 
@@ -179,7 +179,7 @@ function showStats(stats) {
 // 全局代理配置（已废弃，现在每个钱包独立配置代理）
 // const proxyAgent = PROXY_URL ? createProxyAgent(PROXY_URL) : null
 
-async function rpc(method, params = [], proxyAgent = null, retries = 3) {
+async function rpc(method, params = [], proxyAgent = null) {
     const fetchOptions = {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -191,30 +191,10 @@ async function rpc(method, params = [], proxyAgent = null, retries = 3) {
         fetchOptions.agent = proxyAgent
     }
 
-    for (let attempt = 0; attempt <= retries; attempt++) {
-        try {
-            const res = await fetch(HTTP_URL, fetchOptions)
-            const data = await res.json()
-            
-            // 检查是否是流量限制错误
-            if (data.error && data.error.code === -32021) {
-                const retryDelay = Math.max(1000, (attempt + 1) * 500) // 递增延迟
-                console.log(`⚠️ 流量限制，${retryDelay}ms后重试 (${attempt + 1}/${retries + 1})`)
-                if (attempt < retries) {
-                    await new Promise(r => setTimeout(r, retryDelay))
-                    continue
-                }
-            }
-            
-            if (data.error) throw new Error(`${method} RPC error: ${JSON.stringify(data.error)}`)
-            return data.result
-        } catch (error) {
-            if (attempt === retries) throw error
-            const retryDelay = (attempt + 1) * 1000
-            console.log(`⚠️ RPC错误，${retryDelay}ms后重试: ${error.message}`)
-            await new Promise(r => setTimeout(r, retryDelay))
-        }
-    }
+    const res = await fetch(HTTP_URL, fetchOptions)
+    const data = await res.json()
+    if (data.error) throw new Error(`${method} RPC error: ${JSON.stringify(data.error)}`)
+    return data.result
 }
 
 // 创建SOCKS代理
@@ -251,7 +231,7 @@ function createProxyAgent(proxyUrl) {
 // }
 // makeWs()
 
-// 解析分组钱包配置
+// 解析分组钱包配置 
 async function parseWalletConfig() {
     const wallets = []
     let walletIndex = 1
@@ -456,6 +436,7 @@ async function main() {
 }
 
 main().catch(console.error)
+
 // 简化的市场状态更新函数
 function updateSimpleMarket(action, amount) {
     const now = Date.now()
