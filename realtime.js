@@ -7,7 +7,7 @@ import { deCryptText } from './crypt/crypt.js'
 const { HTTP_URL, WS_URL, CHAIN_ID, CONTRACT_ADDRESS } = process.env
 
 // 做市节奏参数（可调）
-const TICK_MS = 420      // 更高频
+const TICK_MS = 2000     // 降低频率避免网络限制和nonce冲突
 const CANCEL_RATIO = 0.35 // 撤单概率（模拟撤单/改单）
 const CALL_RATIO = 0.5    // 合约调用比例（有合约时）
 
@@ -440,14 +440,26 @@ async function main() {
                 }
             } catch (e) {
                 console.error(`[MM W${walletIndex} error]`, e.message)
-                // 如果是nonce错误，重新同步nonce
-                if (e.message.includes('nonce')) {
+                // 智能nonce管理：处理各种nonce相关错误
+                if (e.message.includes('nonce') ||
+                    e.message.includes('replacement') ||
+                    e.message.includes('underpriced') ||
+                    e.message.includes('already known')) {
+
+                    console.log(`🔄 [W${walletIndex}] 检测到nonce相关错误，重新同步nonce...`)
+                    const oldNonce = instance.nonce
                     instance.nonce = await instance.provider.getTransactionCount(instance.wallet.address, 'pending')
+                    console.log(`📍 [W${walletIndex}] nonce同步: ${oldNonce} → ${instance.nonce}`)
+
+                    // nonce错误后等待更长时间再继续
+                    await new Promise(r => setTimeout(r, 3000))
                 }
             }
 
-            // 每个钱包独立的随机间隔
-            await new Promise(r => setTimeout(r, TICK_MS + Math.floor(Math.random() * 80) + walletIndex * 50))
+            // 每个钱包独立的随机间隔，增加更多随机性
+            const randomDelay = Math.floor(Math.random() * 1000) // 0-1000ms随机
+            const walletOffset = walletIndex * 200 // 每个钱包间隔200ms
+            await new Promise(r => setTimeout(r, TICK_MS + randomDelay + walletOffset))
         }
     })
 
