@@ -104,10 +104,13 @@ async function executeSingleOrder(walletInstance, iface, nonce, orderId, fee, ga
 
 async function executeBatchOrders(walletInstance, iface, nonce, orderId, fee, gasMultiplier, walletIndex = 0) {
     const { wallet, provider, stats, proxyAgent } = walletInstance
-    console.log(`[MM W${walletIndex}] 📦 BATCH START OID=${orderId}-${orderId + 2}`)
+
+    // 随机批量大小 1-5笔
+    const batchSize = Math.floor(Math.random() * 5) + 1
+    console.log(`[MM W${walletIndex}] 📦 BATCH START OID=${orderId}-${orderId + batchSize - 1} (${batchSize}笔)`)
     const promises = []
 
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < batchSize; i++) {
         const value = SPREAD_LEVELS[i % SPREAD_LEVELS.length]
         const tx = {
             to: wallet.address, value, data: '0x', nonce: nonce + i,
@@ -129,7 +132,8 @@ async function executeBatchOrders(walletInstance, iface, nonce, orderId, fee, ga
     }
 
     await Promise.all(promises)
-    stats.place += 3
+    stats.place += batchSize
+    return batchSize
 }
 
 async function executeModifyOrder(walletInstance, iface, nonce, orderId, fee, gasMultiplier, walletIndex = 0) {
@@ -230,6 +234,22 @@ function createProxyAgent(proxyUrl) {
 //     ws.on('close', () => setTimeout(makeWs, 2000))
 // }
 // makeWs()
+
+// Fee数据缓存，减少重复getFeeData调用
+let cachedFeeData = null
+let feeDataCacheTime = 0
+const FEE_CACHE_DURATION = 15000 // 15秒缓存
+
+async function getCachedFeeData(provider) {
+    const now = Date.now()
+    if (cachedFeeData && (now - feeDataCacheTime) < FEE_CACHE_DURATION) {
+        return cachedFeeData
+    }
+
+    cachedFeeData = await provider.getFeeData()
+    feeDataCacheTime = now
+    return cachedFeeData
+}
 
 // 解析分组钱包配置 
 async function parseWalletConfig() {
@@ -383,7 +403,7 @@ async function main() {
                 const doCancel = r >= strategy.batch + strategy.modify && r < strategy.batch + strategy.modify + strategy.cancel
                 const doCall = CONTRACT_ADDRESS && r >= strategy.batch + strategy.modify + strategy.cancel && r < strategy.batch + strategy.modify + strategy.cancel + strategy.call
 
-                const fee = await instance.provider.getFeeData()
+                const fee = await getCachedFeeData(instance.provider)
 
                 // 智能Gas策略
                 const gasRand = Math.random()
@@ -393,9 +413,9 @@ async function main() {
 
                 if (doBatch) {
                     // 批量操作：连续发送多笔交易
-                    await executeBatchOrders(instance, iface, instance.nonce, localOrderId, fee, gasMultiplier, walletIndex)
-                    instance.nonce += 3
-                    localOrderId += 3
+                    const batchSize = await executeBatchOrders(instance, iface, instance.nonce, localOrderId, fee, gasMultiplier, walletIndex)
+                    instance.nonce += batchSize
+                    localOrderId += batchSize
                     instance.stats.batch++
                 } else if (doModify) {
                     // 修改订单：先撤单再下单
